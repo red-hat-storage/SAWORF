@@ -1,0 +1,47 @@
+#!/bin/bash
+
+function docker_stats
+{
+ echo "until false;do date +%m%d%Y-%H%M%S >> $run_log_dir/docker_stats.log; docker stats --no-stream=true --format \"table {{.Name}}\t{{.CPUPerc}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\"|grep 'mongo\|gluster' >> $run_log_dir/docker_stats.log;sleep 5;done" > /tmp/RUN_DOCKER_STATS
+}
+
+function start_collecting()
+{
+ nohup vmstat -t -S M 5 > $run_log_dir/vmstat.log &
+ nohup iostat -txm 5 > $run_log_dir/iostat.log &
+ nohup mpstat -P ALL 5 >> $run_log_dir/mpstat.log &
+ nohup top -S -b -H -d 10.0 >> $run_log_dir/top.log &
+ nohup pidstat -h -r -u -d -t -w -C ycsb 5 >> $run_log_dir/ycsb_stat &
+ nohup pidstat -h -r -u -d -t -w -C mongod 5 >> $run_log_dir/mongod_stat.log &
+ nohup bash /tmp/RUN_DOCKER_STATS > /dev/null 2>&1 &
+}
+
+function stop_collecting()
+{
+ killall vmstat
+ killall iostat
+ killall mpstat
+ killall top
+ killall pidstat
+ ps -ef |grep RUN_DOCKER_STATS|grep -v grep|awk '{print $2}'|xargs -n1 kill
+}
+
+run_log_dir=/tmp/$2
+mkdir -p $run_log_dir
+
+if [ $# -eq 0 ]; then
+ echo "Usage : $0 <start|stop>"
+ exit 1
+fi
+
+case "$1" in
+start) echo "starting stat collection..."
+       docker_stats
+       start_collecting
+	  ;;
+stop)  echo "stopping stat collection..."
+       stop_collecting
+	  ;;
+*) echo "You must use either start or stop"
+   ;;
+esac

@@ -1,0 +1,33 @@
+#!/bin/bash
+
+let total_throughput=0
+let total_runtime=0
+log_dir=${1}
+pod_to_node_mapfile=/tmp/podmap.$$
+oc get pods --all-namespaces -o wide|grep mongodb|grep -v ycsb|awk '{print $2" "$8}' > ${pod_to_node_mapfile}
+total_pods=$(cat ${pod_to_node_mapfile}|wc -l)
+echo "total_pods=$total_pods"
+pushd ${log_dir}
+echo "Node sort With RunTime in minutes"
+while read line 
+do
+ pod_name=$(echo ${line}| awk -F_ '{print $2}')
+ runtime=$(echo $(echo ${line}| awk '{print $3}')/60000|bc)
+ node=$(grep ${pod_name} $pod_to_node_mapfile|awk '{print $2}')
+ total_runtime=$(echo "$total_runtime + $runtime"|bc)
+ echo $node $pod_name ${runtime}
+done < <(grep 'RunTime' mongodb*.log)
+echo "average runtime: $(echo "scale=2; $total_runtime/$total_pods"|bc -l)"
+
+echo "Node sort with Throughput"
+while read line 
+do
+ pod_name=$(echo ${line}| awk -F_ '{print $2}')
+ throughput=$(echo ${line}| awk '{print $3}')
+ node=$(grep ${pod_name} $pod_to_node_mapfile|awk '{print $2}')
+ total_throughput=$(echo "$total_throughput + $throughput"|bc)
+ echo $node $pod_name ${throughput}
+done < <(grep 'Throughput' mongodb*.log)
+echo "average Throughput: $(echo "scale=2; $total_throughput/$total_pods"|bc -l)"
+popd
+rm -rf ${pod_to_node_mapfile}

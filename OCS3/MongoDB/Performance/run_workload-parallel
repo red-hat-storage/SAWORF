@@ -1,0 +1,52 @@
+#!/bin/bash
+
+readonly PROJECT_BASENAME=mongodb
+readonly NUMBER_OF_PROJECTS=30
+readonly YCSB_WORKLOAD=workloadb
+readonly YCSB_DISTRIBUTION=uniform
+readonly YCSB_RECORDCOUNT=4000000
+readonly YCSB_OPERATIONCOUNT=1000000
+readonly YCSB_THREADS=2
+readonly RUN_NAME=${1}
+readonly HOST_LIST=/home/sagy/computelist
+readonly RUN_DIR=$(dirname $0)
+
+log_dir="${RUN_DIR}/${RUN_NAME}"
+
+if [[ ! -d "${log_dir}" ]]; then
+  mkdir "$log_dir"
+fi
+
+sshpass -predhat pssh -t0 -x "-oStrictHostKeyChecking=no -i ~/.ssh/ocpocs311.sagyocpocsonaws.com" -i -l ec2-user -h ${HOST_LIST} -A "w"
+
+echo "starting stat collection on worker nodes"
+sshpass -predhat pssh -t0 -x "-oStrictHostKeyChecking=no -i ~/.ssh/ocpocs311.sagyocpocsonaws.com" -i -l ec2-user -h ${HOST_LIST} -A "nohup sudo bash gather_stats start $RUN_NAME &"
+
+for ((i=1; i<=${NUMBER_OF_PROJECTS}; i++))
+do
+  PROJECT_NAME=${PROJECT_BASENAME}-$i
+  echo "Starting load on project ${PROJECT_NAME}"
+  ${RUN_DIR}/run_workload ${PROJECT_NAME} ${YCSB_WORKLOAD} ${YCSB_DISTRIBUTION} ${YCSB_RECORDCOUNT} ${YCSB_OPERATIONCOUNT} ${YCSB_THREADS} ${log_dir} &
+done
+
+sleep 10
+
+while true
+do
+  finished_runs=$(grep "\[OVERALL\]" ${log_dir}/*.log|grep RunTime|wc -l)
+  if [ $finished_runs == $NUMBER_OF_PROJECTS ]; then
+    echo "all $finished_runs jobs are done..."
+    echo "stopping stat collection on worker nodes"
+    sshpass -predhat pssh -t0 -x "-oStrictHostKeyChecking=no -i ~/.ssh/ocpocs311.sagyocpocsonaws.com" -i -l ec2-user -h ${HOST_LIST} -A "nohup sudo bash gather_stats stop $RUN_NAME &"
+    sleep 10
+    echo "getting stats from worker nodes"
+    for node in $(cat $HOST_LIST)
+    do
+      sshpass -P passphrase -p 'redhat' scp -q -oStrictHostKeyChecking=no -i ~/.ssh/ocpocs311.sagyocpocsonaws.com -r ec2-user@$node:/tmp/$RUN_NAME ./$log_dir/$RUN_NAME-$node
+    done
+    break
+  else
+    echo "so far $finished_runs jobs have finished..."
+    sleep 10
+  fi
+done
