@@ -1,7 +1,0 @@
-PROJECT_NAME=$1
-readonly MONGODB_USER=redhat
-readonly MONGODB_PASSWORD=redhat
-readonly MONGODB_DATABASE=redhatdb
-readonly PROJECT_NAME=${1}
-readonly MONGODB_IP=$(oc get svc -n ${PROJECT_NAME} | grep -v glusterfs | grep mongodb | awk '{print $3}')
-oc -n ${PROJECT_NAME} exec $(oc get pod -n ${PROJECT_NAME} | grep ycsb | awk '{print $1}') -it -- bash -c "mongo --eval \"db.stats(1024*1024*1024)\" ${MONGODB_IP}:27017/${MONGODB_DATABASE} -u ${MONGODB_USER} -p ${MONGODB_PASSWORD}"
