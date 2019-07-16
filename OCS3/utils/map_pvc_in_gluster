@@ -1,0 +1,108 @@
+#!/bin/bash
+
+function check_logged_to_ocp
+{
+ oc status > /dev/null 2>&1
+ exit_code=$?
+ if [ $exit_code != 0 ]; then
+  echo "you are not logged into OCP. Exiting"
+  exit
+ fi
+}
+
+function set_heketi_env
+{
+ export HEKETI_POD=$(oc get pods -l glusterfs=heketi-storage-pod -n app-storage -o jsonpath='{.items[0].metadata.name}')
+ export HEKETI_CLI_SERVER=http://$(oc get route/heketi-storage -n app-storage -o jsonpath='{.spec.host}')
+ export HEKETI_CLI_USER=admin
+ export HEKETI_CLI_KEY=$(oc get pod/$HEKETI_POD -n app-storage -o jsonpath='{.spec.containers[0].env[?(@.name=="HEKETI_ADMIN_KEY")].value}')
+ export HEKETI_ADMIN_KEY_SECRET=$(echo -n ${HEKETI_CLI_KEY} | base64)
+}
+
+function get_topology_file
+{
+ heketi-cli topology info > $topology_file
+}
+
+function getting_node_data
+{
+ for node_id in $(heketi-cli node list|awk '{print $1}'|awk -F: '{print $2}')
+ do
+  node_name=$(heketi-cli node info $node_id|grep 'Management Hostname'|awk '{print $3}')
+  node_data[$node_id]=$node_name
+ done
+}  
+
+function get_pvc_data
+{
+ for pvc_data in $(oc get pvc | grep 'glusterfs-storage'|awk '{print $1","$3}')
+ do
+  pvc_name=$(echo $pvc_data|awk -F, '{print $1}')
+  pv_name=$(echo $pvc_data|awk -F, '{print $2}')
+  gluster_vol_id=$(oc describe pv $pv_name|grep 'gluster.kubernetes.io/heketi-volume-id'|awk -F= '{print $2}')  
+  echo "PVC $pvc_name is gluster volume $gluster_vol_id"
+  for node_id in $(sed -n "/$gluster_vol_id/,/Size: 10/p" $topology_file|grep 'Node: '|awk '{print $2}')
+  do
+   if [ $single_zone = true ]; then
+    echo node: "${node_data[$node_id]}"
+   else
+    echo zone: "${node_zones[${node_data[$node_id]}]}" ,node: "${node_data[$node_id]}"
+   fi
+  done
+ done
+}
+
+function get_pvc_data_all_projects
+{
+ for pvc_data in $(oc get pvc --all-namespaces | grep 'glusterfs-storage'|awk '{print $2","$4}')
+ do
+  pvc_name=$(echo $pvc_data|awk -F, '{print $1}')
+  pv_name=$(echo $pvc_data|awk -F, '{print $2}')
+  gluster_vol_id=$(oc describe pv $pv_name|grep 'gluster.kubernetes.io/heketi-volume-id'|awk -F= '{print $2}')
+  echo "PVC $pvc_name is gluster volume $gluster_vol_id"
+  for node_id in $(sed -n "/$gluster_vol_id/,/Size: 10/p" $topology_file|grep 'Node: '|awk '{print $2}')
+  do
+   if [ $single_zone = true ]; then
+    echo node: "${node_data[$node_id]}"
+   else
+    echo zone: "${node_zones[${node_data[$node_id]}]}" ,node: "${node_data[$node_id]}"
+   fi
+  done
+ done
+}
+
+
+function display_it
+{
+ cat $data_file
+ echo ""
+ echo "summary data:"
+ echo "node stats:"
+ if [ $single_zone = true ]; then
+  cat $data_file|grep 'node:'|awk '{print $2}'|sort|uniq -c
+ else
+  cat $data_file|grep zone|awk '{print $4}'|sort|uniq -c
+  echo "zone stas:"
+  cat $data_file|grep zone|awk '{print $2}'|sort|uniq -c
+ fi
+} 
+
+declare -A node_data
+declare -A node_zones=(["ip-172-16-21-141.us-west-2.compute.internal"]="west-2a" ["ip-172-16-22-99.us-west-2.compute.internal"]="west-2a" ["ip-172-16-21-215.us-west-2.compute.internal"]="west-2b" ["ip-172-16-26-151.us-west-2.compute.internal"]="west-2b" ["ip-172-16-22-150.us-west-2.compute.internal"]="west-2c" ["ip-172-16-17-102.us-west-2.compute.internal"]="west-2c")
+
+
+check_logged_to_ocp
+set_heketi_env
+topology_file=/tmp/heketi_topology.$$
+data_file=/tmp/pvc_data.$$
+single_zone=true
+get_topology_file
+getting_node_data
+if [ $# -eq 0 ]; then
+ get_pvc_data > $data_file
+else
+ get_pvc_data_all_projects > $data_file
+fi
+display_it
+rm $topology_file
+rm $data_file
