@@ -1,0 +1,35 @@
+#!/bin/bash
+
+if [ $# -eq 0 ]; then
+ echo "Usage : $0 <rook directory>"
+ exit 1
+fi
+
+readonly CEPH_PROJECT=rook-ceph
+
+rook_dir=${1}
+
+oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/common.yaml
+oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/operator-openshift-with-csi.yaml
+oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/rbd/
+oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/cephfs/
+
+# assumption is that all workers are OCS nodes so discover pod per worker + 1 operator
+# change if this is not the case.
+worker_nodes=$(oc get nodes | grep worker | wc -l)
+(( worker_nodes++ )) 
+while true
+do
+  ready_pods=$(oc get pods -n ${CEPH_PROJECT} | grep rook | awk '{print $3}' | grep Running | wc -l)
+  if [[ ${ready_pods} == ${worker_nodes} ]]; then
+    break
+  else
+    echo "Waiting for operator and discover pods to come alive..."
+    sleep 2
+  fi
+done
+
+echo "Creating Ceph cluster..."
+oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/cluster.yaml
+echo "Installing the toolbox..."
+oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/toolbox.yaml
