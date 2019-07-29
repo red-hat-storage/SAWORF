@@ -8,11 +8,16 @@ fi
 readonly CEPH_PROJECT=rook-ceph
 
 rook_dir=${1}
+ceph_type=${2}
 
 oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/common.yaml
-oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/operator-openshift-with-csi.yaml
 oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/rbd/
 oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/cephfs/
+if [ "${ceph_type}" = "csi" ]; then
+  oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/operator-openshift-with-csi.yaml
+else
+  oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/operator-openshift.yaml
+fi
 
 # assumption is that all workers are OCS nodes so discover pod per worker + 1 operator
 # change if this is not the case.

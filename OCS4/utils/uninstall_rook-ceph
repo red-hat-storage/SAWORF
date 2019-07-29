@@ -1,0 +1,19 @@
+rook_dir=${1}
+ceph_type=${2}
+
+
+oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/toolbox.yaml
+oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/cluster.yaml
+if [ "${ceph_type}" = "csi" ]; then
+  oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/operator-openshift-with-csi.yaml
+else
+  oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/operator-openshift.yaml
+fi
+oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/cephfs/
+oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/rbd/
+oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/common.yaml
+
+pssh -i -t0 -x "-oStrictHostKeyChecking=no -i ~/id_rsa" -l core -h workers "sudo rm -rf /var/lib/rook"
+pssh -i -t0 -x "-oStrictHostKeyChecking=no -i ~/id_rsa" -l core -h workers "sudo sgdisk -Z /dev/nvme1n1"
+pssh -i -t0 -x "-oStrictHostKeyChecking=no -i ~/id_rsa" -l core -h workers "sudo ls /dev/mapper/ceph-* | sudo xargs -I% -- dmsetup remove %"
+pssh -i -t0 -x "-oStrictHostKeyChecking=no -i ~/id_rsa" -l core -h workers "sudo rm -rf /dev/ceph-*"
