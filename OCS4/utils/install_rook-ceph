@@ -6,21 +6,38 @@ if [ $# -eq 0 ]; then
 fi
 
 readonly CEPH_PROJECT=rook-ceph
+readonly CEPHFS=true
+readonly ROOKCEPH_TYPE=csi
 
 rook_dir=${1}
-ceph_type=${2}
 
+function print_in_a_box
+{
+  msg="# $* #"
+  edge=$(echo "$msg" | sed 's/./#/g')
+  echo "$edge"
+  echo "$msg"
+  echo "$edge"
+}
+
+print_in_a_box "Running common.yaml"
 oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/common.yaml
+print_in_a_box "RBAC for RBD"
 oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/rbd/
-oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/cephfs/
-if [ "${ceph_type}" = "csi" ]; then
+
+${CEPHFS} && oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/cephfs/ || print_in_a_box "Not installing CephFS"
+if [ "${ROOKCEPH_TYPE}" = "csi" ]; then
+  print_in_a_box "operator-openshift-with-csi.yaml"
   oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/operator-openshift-with-csi.yaml
 else
+  print_in_a_box "operator-openshift.yaml"
   oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/operator-openshift.yaml
 fi
 
+# NOTE:
 # assumption is that all workers are OCS nodes so discover pod per worker + 1 operator
 # change if this is not the case.
+
 worker_nodes=$(oc get nodes | grep worker | wc -l)
 (( worker_nodes++ )) 
 while true
@@ -34,7 +51,149 @@ do
   fi
 done
 
-echo "Creating Ceph cluster..."
+print_in_a_box "Creating Ceph cluster..."
 oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/cluster.yaml
-echo "Installing the toolbox..."
+
+if ${CEPHFS}; then 
+  print_in_a_box "Creating filesystem..."
+  oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/filesystem.yaml 
+else
+  print_in_a_box "Not creating filesystem..."
+fi
+
+print_in_a_box "Installing the toolbox..."
 oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/toolbox.yaml
+
+worker_nodes=$(oc get nodes | grep worker | wc -l)
+while true
+do
+  ready_pods=$(oc get pods -n ${CEPH_PROJECT} | grep osd | grep -v prepare | awk '{print $3}' | grep Running | wc -l)
+  if [[ ${ready_pods} == ${worker_nodes} ]]; then
+    break
+  else
+    echo "Waiting for OSD pods to come up..."
+    sleep 2
+  fi
+done
+
+
+readonly ADMIN_KEY=$(pod=$(oc get pod -n rook-ceph -l app=rook-ceph-operator  -o jsonpath="{.items[0].metadata.name}"); oc exec -ti -n rook-ceph ${pod} -- bash -c "ceph auth get-key client.admin -c /var/lib/rook/rook-ceph/rook-ceph.config | base64")
+readonly ADMIN_ID=$(pod=$(oc get pod -n rook-ceph -l app=rook-ceph-operator  -o jsonpath="{.items[0].metadata.name}"); oc exec -ti -n rook-ceph ${pod} -- bash -c "echo -n admin|base64")
+
+print_in_a_box "Creating a secret for the storage classes..."
+
+cat <<EOF | oc create -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ceph-rook-csi-secret
+  namespace: default
+data:
+  userID: ${ADMIN_ID}
+  userKey: ${ADMIN_KEY}
+  adminID: ${ADMIN_ID}
+  adminKey: ${ADMIN_KEY}
+EOF
+
+print_in_a_box "Creating a Ceph block pool CRD"
+
+cat <<EOF | oc create -f -
+apiVersion: ceph.rook.io/v1
+kind: CephBlockPool
+metadata:
+  name: rbd
+  namespace: rook-ceph
+spec:
+  failureDomain: host
+  replicated:
+    size: 3
+EOF
+
+print_in_a_box "Create Ceph RBD storage class..."
+
+cat <<EOF | oc create -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+   name: csi-rbd
+provisioner: rbd.csi.ceph.com
+parameters:
+    # Specify a string that identifies your cluster. Ceph CSI supports any
+    # unique string. When Ceph CSI is deployed by Rook use the Rook namespace,
+    # this value can be found doing this 'oc edit cm rook-ceph-mon-endpoints -n rook-ceph',
+    # for example "rook-ceph".
+    clusterID: rook-ceph
+    
+    # Ceph pool into which the RBD image shall be created
+    pool: rbd
+    
+    # RBD image format. Defaults to "2".
+    imageFormat: "2"
+    
+    # RBD image features. Available for imageFormat: "2". CSI RBD currently supports only layering feature.
+    imageFeatures: layering
+    
+    # The secrets have to contain Ceph admin credentials.
+    csi.storage.k8s.io/provisioner-secret-name: ceph-rook-csi-secret
+    csi.storage.k8s.io/provisioner-secret-namespace: default
+    csi.storage.k8s.io/node-stage-secret-name: ceph-rook-csi-secret
+    csi.storage.k8s.io/node-stage-secret-namespace: default
+    # Ceph users for operating RBD
+    adminid: admin
+    
+    # uncomment the following to use rbd-nbd as mounter on supported nodes
+    # mounter: rbd-nbd
+reclaimPolicy: Delete
+EOF
+
+if ${CEPHFS}; then
+  print_in_a_box "Create CephFS storage class..."
+  cat <<EOF | oc create -f -
+  apiVersion: storage.k8s.io/v1
+  kind: StorageClass
+  metadata:
+     name: csi-cephfs
+  provisioner: cephfs.csi.ceph.com
+  parameters:
+      # Specify a string that identifies your cluster. Ceph CSI supports any
+      # unique string. When Ceph CSI is deployed by Rook use the Rook namespace,
+      # this value can be found doing this 'oc edit cm rook-ceph-mon-endpoints -n rook-ceph',
+      # for example "rook-ceph".
+      clusterID: rook-ceph
+
+      # For provisionVolume: "true":
+      #   A new volume will be created along with a new Ceph user.
+      #   Requires admin credentials (adminID, adminKey).
+      # For provisionVolume: "false":
+      #   It is assumed the volume already exists and the user is expected
+      #   to provide path to that volume (rootPath) and user credentials (userID, userKey).
+      # provisionVolume: "true"
+
+      # CephFS filesystem name into which the volume shall be created
+      fsName: myfs
+
+      # Ceph pool into which the volume shall be created
+      # Required for provisionVolume: "true"
+      pool: myfs-data0
+
+      # Root path of an existing CephFS volume
+      # Required for provisionVolume: "false"
+      # rootPath: /absolute/path
+   
+      # The secrets have to contain user and/or Ceph admin credentials.
+      csi.storage.k8s.io/provisioner-secret-name: ceph-rook-csi-secret
+      csi.storage.k8s.io/provisioner-secret-namespace: default
+      csi.storage.k8s.io/node-stage-secret-name: ceph-rook-csi-secret
+      csi.storage.k8s.io/node-stage-secret-namespace: default
+
+      # (optional) The driver can use either ceph-fuse (fuse) or ceph kernel client (kernel)
+      # If omitted, default volume mounter will be used - this is determined by probing for ceph-fuse
+      # or by setting the default mounter explicitly via --volumemounter command-line argument.
+      # mounter: kernel
+  reclaimPolicy: Delete
+  mountOptions:
+    - noexec
+EOF
+fi
+
+print_in_a_box "End of Rook/CEPH install"

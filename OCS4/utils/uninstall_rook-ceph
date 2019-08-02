@@ -1,10 +1,17 @@
-rook_dir=${1}
-ceph_type=${2}
+#!/bin/bash
 
+# Note: This script uses:
+# 1. bastion pod to ssh to all worker nodes.
+# 2. pssh to parallel ssh (without or without passord) to all worker nodes. You need pssh on the host 
+# running this script.
+
+rook_dir=${1}
+readonly ROOKCEPH_TYPE=csi
+readonly RSA_FILE=~/.ssh/id_rsa
 
 oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/toolbox.yaml
 oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/cluster.yaml
-if [ "${ceph_type}" = "csi" ]; then
+if [ "${ROOKCEPH_TYPE}" = "csi" ]; then
   oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/operator-openshift-with-csi.yaml
 else
   oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/operator-openshift.yaml
@@ -13,7 +20,11 @@ oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/cephfs/
 oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/rbd/
 oc delete -f ${rook_dir}/cluster/examples/kubernetes/ceph/common.yaml
 
-pssh -i -t0 -x "-oStrictHostKeyChecking=no -i ~/id_rsa" -l core -h workers "sudo rm -rf /var/lib/rook"
-pssh -i -t0 -x "-oStrictHostKeyChecking=no -i ~/id_rsa" -l core -h workers "sudo sgdisk -Z /dev/nvme1n1"
-pssh -i -t0 -x "-oStrictHostKeyChecking=no -i ~/id_rsa" -l core -h workers "sudo ls /dev/mapper/ceph-* | sudo xargs -I% -- dmsetup remove %"
-pssh -i -t0 -x "-oStrictHostKeyChecking=no -i ~/id_rsa" -l core -h workers "sudo rm -rf /dev/ceph-*"
+oc delete sc csi-cephfs
+oc delete sc csi-rbd
+oc delete secret ceph-rook-csi-secret
+
+pssh -i -t0 -x "-oStrictHostKeyChecking=no -i ${RSA_FILE}" -l core -h workers "sudo rm -rf /var/lib/rook"
+pssh -i -t0 -x "-oStrictHostKeyChecking=no -i ${RSA_FILE}" -l core -h workers "sudo sgdisk -Z /dev/nvme1n1"
+pssh -i -t0 -x "-oStrictHostKeyChecking=no -i ${RSA_FILE}" -l core -h workers "sudo ls /dev/mapper/ceph-* | sudo xargs -I% -- dmsetup remove %"
+pssh -i -t0 -x "-oStrictHostKeyChecking=no -i ${RSA_FILE}" -l core -h workers "sudo rm -rf /dev/ceph-*"
