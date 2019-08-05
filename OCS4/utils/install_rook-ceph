@@ -25,7 +25,13 @@ oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/common.yaml
 print_in_a_box "RBAC for RBD"
 oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/rbd/
 
-${CEPHFS} && oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/cephfs/ || print_in_a_box "Not installing CephFS"
+if ${CEPHFS}; then
+  print_in_a_box "Installing CephFS"
+  oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/csi/rbac/cephfs/ 
+else
+  print_in_a_box "Not installing CephFS"
+fi
+
 if [ "${ROOKCEPH_TYPE}" = "csi" ]; then
   print_in_a_box "operator-openshift-with-csi.yaml"
   oc create -f ${rook_dir}/cluster/examples/kubernetes/ceph/operator-openshift-with-csi.yaml
