@@ -1,0 +1,28 @@
+#!/bin/bash
+
+readonly CLUSTER_NAME=nortah
+readonly ZONE=us-west-2b
+readonly VOLUME_SIZE=5120
+readonly VOLUME_TYPE=gp2
+readonly HOST_DEVICE=/dev/sdx
+
+for instance_id in $(aws ec2 describe-instances --filters "Name=tag:Name,Values=${CLUSTER_NAME}*worker*" --query 'Reservations[].Instances[].InstanceId')
+do 
+  echo "Working on ${instance_id}"
+  volume_id=$(aws ec2 create-volume --size ${VOLUME_SIZE} --availability-zone ${ZONE} --volume-type ${VOLUME_TYPE} --tag-specifications "ResourceType=volume,Tags=[{Key=Name,Value=ocs_volume-${instance_id}}]" | head -1 | awk '{print $7}')
+  echo "Waiting for volume ${volume_id} to become available..."
+  while true
+  do
+    volume_state=$(aws ec2 describe-volumes --volume-ids ${volume_id} | awk '{print $7}')
+    if [[ "${volume_state}" == "available" ]]; then
+      echo "Volume ${volume_id} is available for attachment..."
+      sleep 1
+      break
+    else
+      echo "Waiting for Volume ${volume_id} to become available..."
+      sleep 2
+    fi
+  done
+  echo "Attaching volume ${volume_id} to instance ${instance_id}..."
+  aws ec2 attach-volume --volume-id ${volume_id} --instance-id ${instance_id} --device ${HOST_DEVICE}
+done
