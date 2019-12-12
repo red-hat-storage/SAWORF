@@ -1,0 +1,37 @@
+#!/bin/bash
+
+readonly CLUSTER_NAME=nortah
+readonly ZONE=us-west-2b
+readonly VOLUME_SIZE=1024
+#readonly VOLUME_SIZE=512
+readonly VOLUME_TYPE=gp2
+readonly HOST_DEVICE_PREFIX=/dev/sd
+readonly VOLUMES_PER_INSTANCE=5
+readonly OCS_INSTANCES=3
+declare -a DEVICE_LETTER=(u v w x y z)
+let instance_counter=0
+for instance_id in $(aws ec2 describe-instances --filters "Name=instance-state-name,Values='running'" "Name=tag:Name,Values=${CLUSTER_NAME}*ocsnode*" --query 'Reservations[].Instances[].InstanceId')
+do 
+  for ((ebs_volume=1; ebs_volume<=${VOLUMES_PER_INSTANCE}; ebs_volume++))
+  do
+    echo "Working on ${instance_id}, EBS volume number ${ebs_volume} ..."
+    volume_id=$(aws ec2 create-volume --size ${VOLUME_SIZE} --availability-zone ${ZONE} --volume-type ${VOLUME_TYPE} --tag-specifications "ResourceType=volume,Tags=[{Key=Name,Value=ocs_volume-${instance_id}}]" | head -1 | awk '{print $7}')
+    echo "Waiting for volume ${volume_id} to become available ..."
+    while true
+    do
+      volume_state=$(aws ec2 describe-volumes --volume-ids ${volume_id} | awk '{print $7}')
+      if [[ "${volume_state}" == "available" ]]; then
+	echo "Volume ${volume_id} is available for attachment ..."
+	sleep 1
+	break
+      else
+	echo "Waiting for Volume ${volume_id} to become available ..."
+	sleep 2
+      fi
+    done
+    echo "Attaching volume ${volume_id} to instance ${instance_id} with device ${HOST_DEVICE_PREFIX}${DEVICE_LETTER[$((ebs_volume-1))]} ..."
+    aws ec2 attach-volume --volume-id ${volume_id} --instance-id ${instance_id} --device ${HOST_DEVICE_PREFIX}${DEVICE_LETTER[$((ebs_volume-1))]}
+    (( instance_counter++ ))
+  done
+  if [[ ${instance_counter} == ${OCS_INSTANCES} ]];then break;fi
+done

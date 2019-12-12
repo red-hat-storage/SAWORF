@@ -1,0 +1,78 @@
+#!/bin/bash
+
+if [ $# -ne 3 ]; then
+ echo "Usage : $0 <rook directory> <device per instance> <osd per device>"
+ exit 1
+fi
+
+readonly CEPH_PROJECT=rook-ceph
+readonly CEPHFS=false
+readonly ROOKCEPH_TYPE=csi
+readonly ROOK_DIR=${1}
+readonly DEVICE_PER_INSTANCE=${2}
+readonly OSD_PER_DEVICE=${3}
+
+
+function print_in_a_box
+{
+  msg="# $* #"
+  edge=$(echo "$msg" | sed 's/./#/g')
+  echo "$edge"
+  echo "$msg"
+  echo "$edge"
+}
+
+print_in_a_box "Running common.yaml"
+oc create -f ${ROOK_DIR}/cluster/examples/kubernetes/ceph/common.yaml
+
+print_in_a_box "operator-openshift.yaml"
+oc create -f ${ROOK_DIR}/cluster/examples/kubernetes/ceph/operator-openshift.yaml
+
+# NOTE:
+# assumption is that all workers are OCS nodes so discover pod per worker + 1 operator
+# change if this is not the case.
+
+ocs_nodes=$(oc get nodes --show-labels|grep cluster1|awk '{print $1}' | wc -l)
+
+while true
+do
+  discover_pods=$(oc get pods -n ${CEPH_PROJECT} | grep rook-discover | awk '{print $3}' | grep Running | wc -l)
+  operator_pod=$(oc get pods -n ${CEPH_PROJECT} | grep rook-ceph-operator | awk '{print $3}' | grep Running | wc -l)
+  if [[ ${discover_pods} == ${ocs_nodes} && "${operator_pod}" == "1" ]]; then
+    break
+  else
+    echo "Waiting for operator and discover pods to come alive..."
+    sleep 2
+  fi
+done
+
+print_in_a_box "Creating Ceph cluster..."
+oc create -f ${ROOK_DIR}/cluster/examples/kubernetes/ceph/cluster-on-pvc.yaml
+
+print_in_a_box "Creating storage clasess ..."
+oc create -f ${ROOK_DIR}/cluster/examples/kubernetes/ceph/csi/rbd/storageclass.yaml
+
+if ${CEPHFS}; then 
+  print_in_a_box "Creating filesystem..."
+  oc create -f ${ROOK_DIR}/cluster/examples/kubernetes/ceph/filesystem.yaml 
+  oc create -f ${ROOK_DIR}/cluster/examples/kubernetes/ceph/csi/cephfs/storageclass.yaml
+else
+  print_in_a_box "Not creating filesystem..."
+fi
+
+print_in_a_box "Installing the toolbox..."
+oc create -f ${ROOK_DIR}/cluster/examples/kubernetes/ceph/toolbox.yaml
+
+ocs_nodes=$(oc get nodes --show-labels | grep cluster1 | wc -l)
+while true
+do
+  ready_pods=$(oc get pods -n ${CEPH_PROJECT} | grep osd | grep -v prepare | awk '{print $3}' | grep Running | wc -l)
+  if [[ ${ready_pods} == $((${DEVICE_PER_INSTANCE} * ${OSD_PER_DEVICE} * ${ocs_nodes})) ]]; then
+    break
+  else
+    echo "Waiting for OSD pods to come up..."
+    sleep 2
+  fi
+done
+
+print_in_a_box "End of Rook/CEPH install"
